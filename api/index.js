@@ -1,63 +1,60 @@
-// Optimized for Edge Runtime (Global Low Latency)
 export const config = { runtime: "edge" };
 
-// Accessing the secure model endpoint from environment variables
-const PROVIDER_API_BASE = (process.env.AI_MODEL_ENDPOINT || "").replace(/\/$/, "");
+// Use the new environment variable name
+const API_URL = (process.env.AI_MODEL_ENDPOINT || "").replace(/\/$/, "");
 
-// Standard headers to be filtered for security and compliance
-const MASKED_HEADERS = new Set([
+const SKIP_LIST = new Set([
   "host", "connection", "keep-alive", "proxy-authenticate", 
   "proxy-authorization", "te", "trailer", "transfer-encoding", 
   "upgrade", "forwarded", "x-forwarded-host", "x-forwarded-proto", 
   "x-forwarded-port"
 ]);
 
-export default async function serviceHandler(request) {
-  // Check for configuration availability
-  if (!PROVIDER_API_BASE) {
-    return new Response("Service Configuration Missing", { status: 500 });
+export default async function handler(request) {
+  // If the variable is not set, it will fail
+  if (!API_URL) {
+    return new Response("Missing API Config", { status: 500 });
   }
 
   try {
-    const { method, url, body } = request;
-    const currentUrl = new URL(url);
-    
-    // Construct the remote service destination
-    const destination = `${PROVIDER_API_BASE}${currentUrl.pathname}${currentUrl.search}`;
+    // Exact same logic as your working code but with different variable names
+    const pathPosition = request.url.indexOf("/", 8);
+    const targetPath = pathPosition === -1 ? "/" : request.url.slice(pathPosition);
+    const finalUrl = API_URL + targetPath;
 
-    const secureHeaders = new Headers();
-    let sourceAddr = null;
+    const forwardHeaders = new Headers();
+    let visitorIp = null;
 
-    // Sanitize and relay incoming headers
-    for (const [key, value] of request.headers.entries()) {
-      const lowerKey = key.toLowerCase();
-      
-      // Skip Vercel internal headers and restricted hop-by-hop headers
-      if (MASKED_HEADERS.has(lowerKey) || lowerKey.startsWith("x-vercel-")) continue;
+    for (const [key, val] of request.headers) {
+      const k = key.toLowerCase();
+      if (SKIP_LIST.has(k) || k.startsWith("x-vercel-")) continue;
 
-      if (lowerKey === "x-real-ip" || lowerKey === "x-forwarded-for") {
-        sourceAddr = sourceAddr || value;
-      } else {
-        secureHeaders.set(key, value);
+      if (k === "x-real-ip") {
+        visitorIp = val;
+        continue;
       }
+      if (k === "x-forwarded-for") {
+        if (!visitorIp) visitorIp = val;
+        continue;
+      }
+      forwardHeaders.set(k, val);
     }
 
-    // Attach origin tracking if available
-    if (sourceAddr) secureHeaders.set("x-forwarded-for", sourceAddr);
+    if (visitorIp) forwardHeaders.set("x-forwarded-for", visitorIp);
 
-    const init = {
+    const { method, body } = request;
+
+    return await fetch(finalUrl, {
       method,
-      headers: secureHeaders,
-      body: !["GET", "HEAD"].includes(method) ? body : undefined,
+      headers: forwardHeaders,
+      body: (method !== "GET" && method !== "HEAD") ? body : undefined,
       duplex: "half",
-      redirect: "manual"
-    };
+      redirect: "manual",
+    });
 
-    // Forward the request to the AI service provider
-    return await fetch(destination, init);
-
-  } catch (error) {
-    console.error("Execution Exception:", error.message);
-    return new Response("Service Connectivity Error", { status: 502 });
+  } catch (err) {
+    // Minimalistic error reporting
+    console.error("Link error:", err.message);
+    return new Response("Service Unavailable", { status: 502 });
   }
 }
