@@ -1,60 +1,56 @@
 export const config = { runtime: "edge" };
 
-// Use the new environment variable name
-const API_URL = (process.env.AI_MODEL_ENDPOINT || "").replace(/\/$/, "");
+// برگشت به نام قبلی برای اطمینان از کارکرد
+const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
 
-const SKIP_LIST = new Set([
+const IGNORE = new Set([
   "host", "connection", "keep-alive", "proxy-authenticate", 
   "proxy-authorization", "te", "trailer", "transfer-encoding", 
   "upgrade", "forwarded", "x-forwarded-host", "x-forwarded-proto", 
   "x-forwarded-port"
 ]);
 
-export default async function handler(request) {
-  // If the variable is not set, it will fail
-  if (!API_URL) {
-    return new Response("Missing API Config", { status: 500 });
+export default async function handler(req) {
+  if (!TARGET_BASE) {
+    return new Response("Configuration missing", { status: 500 });
   }
 
   try {
-    // Exact same logic as your working code but with different variable names
-    const pathPosition = request.url.indexOf("/", 8);
-    const targetPath = pathPosition === -1 ? "/" : request.url.slice(pathPosition);
-    const finalUrl = API_URL + targetPath;
+    // استفاده از متد استاندارد برای استخراج مسیر
+    const urlObj = new URL(req.url);
+    const targetUrl = TARGET_BASE + urlObj.pathname + urlObj.search;
 
-    const forwardHeaders = new Headers();
+    const newHeaders = new Headers();
     let visitorIp = null;
 
-    for (const [key, val] of request.headers) {
-      const k = key.toLowerCase();
-      if (SKIP_LIST.has(k) || k.startsWith("x-vercel-")) continue;
+    for (const [k, v] of req.headers) {
+      const lowK = k.toLowerCase();
+      if (IGNORE.has(lowK) || lowK.startsWith("x-vercel-")) continue;
 
-      if (k === "x-real-ip") {
-        visitorIp = val;
+      if (lowK === "x-real-ip") {
+        visitorIp = v;
         continue;
       }
-      if (k === "x-forwarded-for") {
-        if (!visitorIp) visitorIp = val;
+      if (lowK === "x-forwarded-for") {
+        if (!visitorIp) visitorIp = v;
         continue;
       }
-      forwardHeaders.set(k, val);
+      newHeaders.set(k, v);
     }
 
-    if (visitorIp) forwardHeaders.set("x-forwarded-for", visitorIp);
+    if (visitorIp) newHeaders.set("x-forwarded-for", visitorIp);
 
-    const { method, body } = request;
-
-    return await fetch(finalUrl, {
-      method,
-      headers: forwardHeaders,
-      body: (method !== "GET" && method !== "HEAD") ? body : undefined,
+    // ارسال درخواست با تنظیمات بهینه
+    return await fetch(targetUrl, {
+      method: req.method,
+      headers: newHeaders,
+      body: (req.method !== "GET" && req.method !== "HEAD") ? req.body : undefined,
       duplex: "half",
       redirect: "manual",
     });
 
   } catch (err) {
-    // Minimalistic error reporting
-    console.error("Link error:", err.message);
-    return new Response("Service Unavailable", { status: 502 });
+    console.error("Bridge Error:", err.message);
+    return new Response("Connection Failed", { status: 502 });
   }
 }
